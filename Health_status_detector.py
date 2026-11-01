@@ -101,7 +101,8 @@ BEHAVIORAL_FEATURES = [
     "Skin_Temperature",
     "GSR_Level",
 ]
-
+FEATURE_COLUMNS = SCORE_FEATURES + BEHAVIORAL_FEATURES
+EXPECTED_CLASSES = ["Healthy", "Mild_Stress", "Moderate_Stress", "Severe_Stress"]
 
 def clean_column_name(column_name):
     """Clean common formatting artifacts from CSV headers."""
@@ -138,5 +139,57 @@ def load_and_validate_data(csv_path):
     data[TARGET_COLUMN] = data[TARGET_COLUMN].astype(str).str.strip()
 
     return data
-FEATURE_COLUMNS = SCORE_FEATURES + BEHAVIORAL_FEATURES
-EXPECTED_CLASSES = ["Healthy", "Mild_Stress", "Moderate_Stress", "Severe_Stress"]
+
+
+def build_cnn_model(input_shape, num_classes):
+    """Build a 1D CNN for tabular data."""
+    model = tf.keras.Sequential([
+        # Input layer
+        tf.keras.layers.Input(shape=input_shape),
+
+        # First Conv1D block
+        tf.keras.layers.Conv1D(
+            filters=64,
+            kernel_size=3,
+            activation='relu',
+            padding='same'
+        ),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.MaxPooling1D(pool_size=2),
+        tf.keras.layers.Dropout(0.3),
+
+        # Second Conv1D block
+        tf.keras.layers.Conv1D(
+            filters=128,
+            kernel_size=3,
+            activation='relu',
+            padding='same'
+        ),
+        tf.keras.layers.BatchNormalization(),
+        # Note: Skip pooling if dimension becomes too small
+        tf.keras.layers.Dropout(0.4),
+
+        # Flatten and dense layers
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(128, activation='relu'),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Dropout(0.5),
+        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dropout(0.4),
+
+        # Output layer
+        tf.keras.layers.Dense(num_classes, activation='softmax')
+    ])
+
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+
+    model.compile(
+        optimizer=optimizer,
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    return model
+
+
+
