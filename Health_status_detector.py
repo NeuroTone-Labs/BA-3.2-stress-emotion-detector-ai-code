@@ -547,6 +547,169 @@ def train_mode():
     print("=" * 76)
     return 0
 
+def load_model_and_preprocessing():
+    """Load the trained CNN model and preprocessing artifacts."""
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
+
+    if not PREPROCESSING_PATH.exists():
+        raise FileNotFoundError(f"Preprocessing artifacts not found: {PREPROCESSING_PATH}")
+
+    # Load model
+    model = tf.keras.models.load_model(MODEL_PATH)
+
+    # Load preprocessing
+    preprocessing = joblib.load(PREPROCESSING_PATH)
+
+    return model, preprocessing
+
+
+def load_csv_row(csv_path, row_number, preprocessing):
+    """Load a specific row from the CSV file."""
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+
+    # Load CSV
+    df = pd.read_csv(csv_path)
+
+    # Clean column names
+    df.columns = [clean_column_name(col) for col in df.columns]
+
+    # Validate row number (1-based)
+    if row_number < 1:
+        raise ValueError(
+            f"Row number must be >= 1. Got: {row_number}"
+        )
+
+    if row_number > len(df):
+        raise ValueError(
+            f"Row number {row_number} is out of range. "
+            f"CSV has {len(df)} data rows (valid range: 1-{len(df)})."
+        )
+
+    # Get feature columns from preprocessing
+    feature_columns = preprocessing['feature_columns']
+    target_column = preprocessing['target_column']
+
+    # Check for required features
+    missing_features = [f for f in feature_columns if f not in df.columns]
+    if missing_features:
+        raise ValueError(
+            f"CSV is missing required features: {', '.join(missing_features)}\n"
+            f"Available columns: {', '.join(df.columns.tolist())}"
+        )
+
+    # Extract the row (0-based index)
+    row_idx = row_number - 1
+    row = df.iloc[row_idx]
+
+    # Extract features in the correct order
+    features_dict = {feat: row[feat] for feat in feature_columns}
+
+    # Get actual label if available
+    actual_label = None
+    if target_column in df.columns:
+        actual_label = str(row[target_column]).strip()
+
+    return features_dict, actual_label, df
+
+
+def predict_status(model, preprocessing, features_dict):
+    """Make prediction using the loaded CNN model."""
+    # Extract preprocessing components
+    imputer = preprocessing['imputer']
+    scaler = preprocessing['scaler']
+    label_encoder = preprocessing['label_encoder']
+    feature_columns = preprocessing['feature_columns']
+
+    # Create feature vector in the correct order
+    feature_vector = [features_dict[feat] for feat in feature_columns]
+    X = np.array([feature_vector])
+
+    # Apply preprocessing (same as training)
+    X_imputed = imputer.transform(X)
+    X_scaled = scaler.transform(X_imputed)
+
+    # Reshape for CNN (samples, timesteps, features)
+    X_reshaped = X_scaled.reshape(X_scaled.shape[0], X_scaled.shape[1], 1)
+
+    # Make prediction
+    probabilities = model.predict(X_reshaped, verbose=0)[0]
+    predicted_class_idx = np.argmax(probabilities)
+
+    # Get class names from label encoder
+    class_names = label_encoder.classes_.tolist()
+    predicted_class = class_names[predicted_class_idx]
+
+    # Create probability dictionary
+    prob_dict = {
+        class_name: float(prob)
+        for class_name, prob in zip(class_names, probabilities)
+    }
+
+    result = {
+        'predicted_class': predicted_class,
+        'predicted_class_idx': int(predicted_class_idx),
+        'probabilities': prob_dict,
+        'class_names': class_names,
+        'input_features': features_dict
+    }
+
+    return result
+
+
+def display_results(result, actual_label=None, row_number=None, csv_path=None):
+    """Display prediction results."""
+    print("\n" + "=" * 76)
+    print("NUEROTONE LABS - 1D CNN PREDICTION")
+    print("=" * 76)
+
+    if csv_path and row_number is not None:
+        print(f"\nDataset: {csv_path}")
+        print(f"Selected data row: {row_number}")
+
+    print(f"\nPredicted category: {result['predicted_class']}")
+
+    print(f"\nClass probabilities:")
+    # Display in the order of class_names
+    for class_name in result['class_names']:
+        prob = result['probabilities'][class_name]
+        print(f"{class_name:20s} {prob * 100:6.2f}%")
+
+    if actual_label is not None:
+        print(f"\nActual dataset label: {actual_label}")
+        matches = result['predicted_class'] == actual_label
+        print(f"Prediction matches dataset label: {'Yes' if matches else 'No'}")
+
+    print("=" * 76)
+
+
+def predict_mode(csv_path, row_number):
+    """Run prediction mode."""
+    print("Loading model and preprocessing...")
+    model, preprocessing = load_model_and_preprocessing()
+    print(f"Model loaded: {MODEL_PATH.name}")
+    print(f"Preprocessing loaded: {PREPROCESSING_PATH.name}")
+    print(f"Features: {len(preprocessing['feature_columns'])}")
+    print(f"Classes: {', '.join(preprocessing['label_encoder'].classes_)}")
+
+    # Load CSV row
+    features_dict, actual_label, df = load_csv_row(csv_path, row_number, preprocessing)
+
+    # Make prediction
+    result = predict_status(model, preprocessing, features_dict)
+
+    # Display results
+    display_results(result, actual_label, row_number, csv_path)
+
+    # Verify probabilities sum to ~1.0
+    prob_sum = sum(result['probabilities'].values())
+    if abs(prob_sum - 1.0) > 0.01:
+        print(f"\nWarning: Probabilities sum to {prob_sum:.6f} (expected ~1.0)")
+
+    return 0
+
+
 
 
 
