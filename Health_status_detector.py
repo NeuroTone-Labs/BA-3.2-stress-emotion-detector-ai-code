@@ -709,6 +709,76 @@ def predict_mode(csv_path, row_number):
 
     return 0
 
+def main():
+    parser = argparse.ArgumentParser(
+        description="Mental Health 1D CNN - Training and Prediction"
+    )
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="Train the 1D CNN model"
+    )
+    parser.add_argument(
+        "--predict",
+        action="store_true",
+        help="Run prediction mode"
+    )
+    parser.add_argument(
+        "--csv",
+        type=str,
+        help="Path to CSV file (default: dataset/mental_health_multimodal.csv)"
+    )
+    parser.add_argument(
+        "--row",
+        type=int,
+        help="Row number to predict (1 = first data row)"
+    )
+    args = parser.parse_args()
+
+    # Validate arguments
+    if args.train and args.predict:
+        print("Error: Cannot specify both --train and --predict")
+        return 1
+
+    if not args.train and not args.predict:
+        print("Error: Must specify either --train or --predict")
+        return 1
+
+    try:
+        if args.train:
+            return train_mode()
+        elif args.predict:
+            # Determine CSV path
+            if args.csv:
+                csv_path = Path(args.csv)
+            else:
+                csv_path = CSV_PATH
+
+            # Determine row number
+            if args.row is not None:
+                row_number = args.row
+            else:
+                print("\nError: Row number is required for prediction (--row argument).")
+                return 1
+
+            return predict_mode(csv_path, row_number)
+
+    except FileNotFoundError as e:
+        print(f"\nError: {e}")
+        return 1
+    except ValueError as e:
+        print(f"\nError: {e}")
+        return 1
+    except Exception as e:
+        print(f"\nUnexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+
 
 
 
