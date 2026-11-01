@@ -102,5 +102,41 @@ BEHAVIORAL_FEATURES = [
     "GSR_Level",
 ]
 
+
+def clean_column_name(column_name):
+    """Clean common formatting artifacts from CSV headers."""
+    name = html.unescape(str(column_name)).strip()
+    name = re.sub(r"^\*+|\*+$", "", name).strip()
+    return name
+
+
+def load_and_validate_data(csv_path):
+    """Load dataset and validate required columns."""
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+
+    data = pd.read_csv(csv_path)
+    data.columns = [clean_column_name(column) for column in data.columns]
+
+    # Validate target column
+    if TARGET_COLUMN not in data.columns:
+        raise ValueError(
+            f"Target column '{TARGET_COLUMN}' not found. "
+            f"Available columns: {', '.join(data.columns.tolist())}"
+        )
+
+    # Validate feature columns
+    missing_features = [f for f in FEATURE_COLUMNS if f not in data.columns]
+    if missing_features:
+        raise ValueError(
+            f"Missing required features: {', '.join(missing_features)}\n"
+            f"Available columns: {', '.join(data.columns.tolist())}"
+        )
+
+    # Clean target labels
+    data = data.dropna(subset=[TARGET_COLUMN]).copy()
+    data[TARGET_COLUMN] = data[TARGET_COLUMN].astype(str).str.strip()
+
+    return data
 FEATURE_COLUMNS = SCORE_FEATURES + BEHAVIORAL_FEATURES
 EXPECTED_CLASSES = ["Healthy", "Mild_Stress", "Moderate_Stress", "Severe_Stress"]
