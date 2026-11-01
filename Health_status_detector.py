@@ -192,4 +192,361 @@ def build_cnn_model(input_shape, num_classes):
     return model
 
 
+def train_mode():
+    """Train the 1D CNN model."""
+    print("=" * 76)
+    print("NUEROTONE LABS: 1D CNN TRAINING FOR MENTAL HEALTH CLASSIFICATION")
+    print("=" * 76)
+    print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"TensorFlow version: {tf.__version__}")
+    print(f"CSV: {CSV_PATH}")
+    print(f"Output: {OUTPUT_DIR}")
+
+    # Create output directory
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load and validate data
+    print("\nLoading and validating dataset...")
+    data = load_and_validate_data(CSV_PATH)
+    print(f"Total rows: {len(data)}")
+    print(f"Features: {len(FEATURE_COLUMNS)}")
+
+    # Extract features and target
+    X = data[FEATURE_COLUMNS].values
+    y = data[TARGET_COLUMN].values
+    original_indices = data.index.values  # Preserve original CSV row numbers (0-based)
+
+    # Encode target labels
+    label_encoder = LabelEncoder()
+    y_encoded = label_encoder.fit_transform(y)
+    class_names = label_encoder.classes_.tolist()
+
+    print(f"\nClass mapping:")
+    for i, cls in enumerate(class_names):
+        count = (y == cls).sum()
+        pct = count / len(y) * 100
+        print(f"  {i} -> {cls}: {count} ({pct:.1f}%)")
+
+    # Verify target column is not in features
+    if TARGET_COLUMN in FEATURE_COLUMNS:
+        print(f"ERROR: Target column '{TARGET_COLUMN}' found in features!")
+        return 1
+
+    # Train/test split (80/20, stratified)
+    print("\n" + "=" * 76)
+    print("TRAIN/TEST SPLIT")
+    print("=" * 76)
+
+    X_train_full, X_test, y_train_full, y_test, idx_train_full, idx_test = train_test_split(
+        X, y_encoded, original_indices,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
+        stratify=y_encoded
+    )
+
+    print(f"Training+Validation: {len(X_train_full)} ({len(X_train_full)/len(X)*100:.1f}%)")
+    print(f"Test (held-out): {len(X_test)} ({len(X_test)/len(X)*100:.1f}%)")
+
+    # Train/validation split (80/20 of training data, stratified)
+    X_train, X_val, y_train, y_val, idx_train, idx_val = train_test_split(
+        X_train_full, y_train_full, idx_train_full,
+        test_size=VALIDATION_SIZE,
+        random_state=RANDOM_STATE,
+        stratify=y_train_full
+    )
+
+    print(f"\nTraining: {len(X_train)} ({len(X_train)/len(X)*100:.1f}%)")
+    print(f"Validation: {len(X_val)} ({len(X_val)/len(X)*100:.1f}%)")
+    print(f"Test: {len(X_test)} ({len(X_test)/len(X)*100:.1f}%)")
+
+    # Preprocessing (fit on training data only)
+    print("\n" + "=" * 76)
+    print("PREPROCESSING")
+    print("=" * 76)
+
+    imputer = SimpleImputer(strategy='median')
+    scaler = StandardScaler()
+
+    # Fit on training data
+    X_train_imputed = imputer.fit_transform(X_train)
+    X_train_scaled = scaler.fit_transform(X_train_imputed)
+
+    # Transform validation and test data
+    X_val_imputed = imputer.transform(X_val)
+    X_val_scaled = scaler.transform(X_val_imputed)
+
+    X_test_imputed = imputer.transform(X_test)
+    X_test_scaled = scaler.transform(X_test_imputed)
+
+    # Reshape for CNN (samples, timesteps, features)
+    X_train_reshaped = X_train_scaled.reshape(X_train_scaled.shape[0], X_train_scaled.shape[1], 1)
+    X_val_reshaped = X_val_scaled.reshape(X_val_scaled.shape[0], X_val_scaled.shape[1], 1)
+    X_test_reshaped = X_test_scaled.reshape(X_test_scaled.shape[0], X_test_scaled.shape[1], 1)
+
+    print(f"Input shape for CNN: {X_train_reshaped.shape}")
+    print(f"Number of classes: {len(class_names)}")
+
+    # Build model
+    print("\n" + "=" * 76)
+    print("BUILDING CNN MODEL")
+    print("=" * 76)
+
+    input_shape = (X_train_reshaped.shape[1], 1)
+    num_classes = len(class_names)
+
+    model = build_cnn_model(input_shape, num_classes)
+    model.summary()
+
+    # Callbacks
+    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+        filepath=str(MODEL_PATH),
+        monitor='val_loss',
+        save_best_only=True,
+        mode='min',
+        verbose=1
+    )
+
+    early_stopping = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=EARLY_STOPPING_PATIENCE,
+        restore_best_weights=True,
+        verbose=1
+    )
+
+    # Train model
+    print("\n" + "=" * 76)
+    print("TRAINING CNN")
+    print("=" * 76)
+    print(f"Max epochs: {MAX_EPOCHS}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"Early stopping patience: {EARLY_STOPPING_PATIENCE}")
+    print(f"Training samples: {len(X_train_reshaped)}")
+    print(f"Validation samples: {len(X_val_reshaped)}")
+
+    start_time = time.time()
+
+    history = model.fit(
+        X_train_reshaped, y_train,
+        validation_data=(X_val_reshaped, y_val),
+        epochs=MAX_EPOCHS,
+        batch_size=BATCH_SIZE,
+        callbacks=[checkpoint_callback, early_stopping],
+        verbose=1
+    )
+
+    training_duration = time.time() - start_time
+    print(f"\nTraining completed in {training_duration:.2f} seconds ({training_duration/60:.2f} minutes)")
+
+    # Load best model
+    print("\nLoading best model from checkpoint...")
+    best_model = tf.keras.models.load_model(MODEL_PATH)
+
+    # Evaluate on test set
+    print("\n" + "=" * 76)
+    print("TEST SET EVALUATION")
+    print("=" * 76)
+
+    test_loss, test_accuracy = best_model.evaluate(X_test_reshaped, y_test, verbose=0)
+    print(f"Test loss: {test_loss:.4f}")
+    print(f"Test accuracy: {test_accuracy:.4f} ({test_accuracy * 100:.2f}%)")
+
+    # Get predictions
+    y_pred_proba = best_model.predict(X_test_reshaped, verbose=0)
+    y_pred = np.argmax(y_pred_proba, axis=1)
+
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, y_pred)
+    macro_f1 = f1_score(y_test, y_pred, average="macro", zero_division=0)
+    weighted_f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
+    balanced_accuracy = balanced_accuracy_score(y_test, y_pred)
+
+    print(f"\nOverall Metrics:")
+    print(f"  Accuracy:          {accuracy:.4f} ({accuracy * 100:.2f}%)")
+    print(f"  Macro F1:          {macro_f1:.4f}")
+    print(f"  Weighted F1:       {weighted_f1:.4f}")
+    print(f"  Balanced accuracy: {balanced_accuracy:.4f}")
+
+    # Classification report
+    report_dict = classification_report(
+        y_test, y_pred,
+        labels=range(len(class_names)),
+        target_names=class_names,
+        output_dict=True,
+        zero_division=0,
+    )
+    report_text = classification_report(
+        y_test, y_pred,
+        labels=range(len(class_names)),
+        target_names=class_names,
+        zero_division=0,
+    )
+
+    print(f"\nClassification Report:")
+    print(report_text)
+
+    # Confusion matrix
+    matrix = confusion_matrix(y_test, y_pred, labels=range(len(class_names)))
+    matrix_df = pd.DataFrame(
+        matrix,
+        index=[f"Actual_{name}" for name in class_names],
+        columns=[f"Predicted_{name}" for name in class_names],
+    )
+    print(f"\nConfusion Matrix:")
+    print(matrix_df.to_string())
+
+    # Save preprocessing artifacts
+    print("\n" + "=" * 76)
+    print("SAVING ARTIFACTS")
+    print("=" * 76)
+
+    preprocessing_path = PREPROCESSING_PATH
+    joblib.dump({
+        'imputer': imputer,
+        'scaler': scaler,
+        'label_encoder': label_encoder,
+        'feature_columns': FEATURE_COLUMNS,
+        'target_column': TARGET_COLUMN,
+        'train_indices': idx_train,
+        'val_indices': idx_val,
+        'test_indices': idx_test,
+    }, preprocessing_path)
+    print(f"Saved preprocessing: {preprocessing_path}")
+
+    # Save split index files (original CSV row numbers)
+    train_indices_path = OUTPUT_DIR / "train_indices.csv"
+    val_indices_path = OUTPUT_DIR / "val_indices.csv"
+    test_indices_path = OUTPUT_DIR / "test_indices.csv"
+
+    pd.DataFrame({'csv_row_number': idx_train}).to_csv(train_indices_path, index=False)
+    pd.DataFrame({'csv_row_number': idx_val}).to_csv(val_indices_path, index=False)
+    pd.DataFrame({'csv_row_number': idx_test}).to_csv(test_indices_path, index=False)
+
+    print(f"Saved train indices: {train_indices_path}")
+    print(f"Saved validation indices: {val_indices_path}")
+    print(f"Saved test indices: {test_indices_path}")
+
+    # Save training history
+    history_dict = {k: [float(v) for v in values] for k, values in history.history.items()}
+    history_path = OUTPUT_DIR / "training_history.json"
+    history_path.write_text(json.dumps(history_dict, indent=2), encoding="utf-8")
+    print(f"Saved training history: {history_path}")
+
+    # Save classification reports
+    report_json_path = OUTPUT_DIR / "classification_report.json"
+    report_json_path.write_text(json.dumps(report_dict, indent=2), encoding="utf-8")
+
+    report_txt_path = OUTPUT_DIR / "classification_report.txt"
+    report_txt_path.write_text(report_text, encoding="utf-8")
+
+    print(f"Saved classification report (JSON): {report_json_path}")
+    print(f"Saved classification report (TXT): {report_txt_path}")
+
+    # Save confusion matrix
+    matrix_path = OUTPUT_DIR / "confusion_matrix.csv"
+    matrix_df.to_csv(matrix_path)
+    print(f"Saved confusion matrix: {matrix_path}")
+
+    # Save test predictions with probabilities
+    results_df = pd.DataFrame({
+        'csv_row_number': idx_test,
+        'actual_label': [class_names[y] for y in y_test],
+        'predicted_label': [class_names[y] for y in y_pred],
+        'correct': [y_test[i] == y_pred[i] for i in range(len(y_test))],
+    })
+    for i, cls in enumerate(class_names):
+        results_df[f'prob_{cls}'] = y_pred_proba[:, i]
+
+    results_path = OUTPUT_DIR / "test_predictions.csv"
+    results_df.to_csv(results_path, index=False)
+    print(f"Saved test predictions: {results_path}")
+
+    # Save metrics
+    metrics = {
+        "experiment_name": "mental_health_1d_cnn",
+        "model_type": "1D Convolutional Neural Network",
+        "feature_columns": FEATURE_COLUMNS,
+        "feature_count": len(FEATURE_COLUMNS),
+        "target_column": TARGET_COLUMN,
+        "class_names": class_names,
+        "class_mapping": {str(i): cls for i, cls in enumerate(class_names)},
+        "random_state": RANDOM_STATE,
+        "test_size": TEST_SIZE,
+        "validation_size": VALIDATION_SIZE,
+        "train_size": len(X_train),
+        "validation_size_count": len(X_val),
+        "test_size_count": len(X_test),
+        "max_epochs": MAX_EPOCHS,
+        "batch_size": BATCH_SIZE,
+        "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+        "actual_epochs": len(history.history['loss']),
+        "training_duration_seconds": training_duration,
+        "input_shape": input_shape,
+        "test_metrics": {
+            "loss": float(test_loss),
+            "accuracy": float(accuracy),
+            "macro_f1": float(macro_f1),
+            "weighted_f1": float(weighted_f1),
+            "balanced_accuracy": float(balanced_accuracy),
+        },
+        "class_metrics": {
+            cls: {
+                "precision": report_dict[cls]["precision"],
+                "recall": report_dict[cls]["recall"],
+                "f1_score": report_dict[cls]["f1-score"],
+                "support": report_dict[cls]["support"],
+            }
+            for cls in class_names
+        },
+        "split_indices": {
+            "train_indices_file": str(train_indices_path),
+            "val_indices_file": str(val_indices_path),
+            "test_indices_file": str(test_indices_path),
+        },
+        "warning": (
+            "Experimental result only. Score features may be associated with "
+            "target-label construction; results do not establish clinical validity. "
+            "Dataset shows evidence of label leakage."
+        ),
+    }
+
+    metrics_path = OUTPUT_DIR / "metrics.json"
+    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    print(f"Saved metrics: {metrics_path}")
+
+    # Generate training plots
+    matplotlib.use('Agg')  # Non-interactive backend
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+    # Accuracy plot
+    ax1.plot(history.history['accuracy'], label='Training Accuracy')
+    ax1.plot(history.history['val_accuracy'], label='Validation Accuracy')
+    ax1.set_title('Model Accuracy')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Accuracy')
+    ax1.legend()
+    ax1.grid(True)
+
+    # Loss plot
+    ax2.plot(history.history['loss'], label='Training Loss')
+    ax2.plot(history.history['val_loss'], label='Validation Loss')
+    ax2.set_title('Model Loss')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss')
+    ax2.legend()
+    ax2.grid(True)
+
+    plt.tight_layout()
+    plot_path = OUTPUT_DIR / "training_plots.png"
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Saved training plots: {plot_path}")
+
+    print("\n" + "=" * 76)
+    print("TRAINING COMPLETED SUCCESSFULLY")
+    print("=" * 76)
+    return 0
+
+
+
 
